@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>外卡式超声波流量监测器 · B 段 原理与判定</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="stage">
+  <!-- WebGL 层：数字孪生 / 网格（透明底，压在定格帧之上） -->
+  <canvas id="gl" width="1920" height="1080"></canvas>
+
+  <!-- W0：B6 实物定格帧（唯一外部图片） -->
+  <div id="heroWrap">
+    <img id="heroBase" src="B6_定格帧_1920x1080.png" alt="">
+    <div id="heroClip"><img id="heroClipImg" src="B6_定格帧_1920x1080.png" alt=""></div>
+    <div id="scanBand"></div>
+    <div id="heroVignette"></div>
+  </div>
+
+  <!-- HUD 叠层 -->
+  <div id="hud">
+    <!-- 05：贯穿画面的粗白米黄数据曲线（在其它叠层之下） -->
+    <canvas id="curve" width="1920" height="1080"></canvas>
+
+    <!-- 06–08：两域分屏底色 + 中缝（判定左 / 预警右） -->
+    <div id="screenBg">
+      <i class="bgGrid"></i>
+      <i class="bgGlow cy"></i>
+      <i class="bgGlow or"></i>
+      <i class="bgScan"></i>
+    </div>
+
+    <div id="domSplit">
+      <i class="dv"></i>
+      <span class="dTag l">判定域 · JUDGE</span>
+      <span class="dTag r">预警域 · ALERT</span>
+      <span class="dHand" id="dHand">判定 → 预警</span>
+    </div>
+
+    <!-- 06：右半屏「预警域待命」幽灵水印；08：左半屏「06 判定结论」回看卡 -->
+    <div class="ghost" id="ghostY">
+      <b>ALERT DOMAIN</b>
+      <span>Y1–Y8 · 等待判定结论</span>
+      <i></i>
+    </div>
+
+    <div class="recap" id="jRecap">
+      <div class="rc-h"><b>06 判定结论 · VERDICT</b><span class="mono">REVIEW</span></div>
+      <div class="rc-v">提示复核 · 不升级预警</div>
+      <div class="rc-rows">
+        <div><span>命中</span><b class="mono">3 / 8</b></div>
+        <div><span>动态权重 w</span><b class="mono">0.246</b></div>
+        <div><span>升级</span><b class="mono">NO</b></div>
+      </div>
+      <div class="rc-f">判定域只给结论；分级与路由交给右域，人员状态不参与</div>
+    </div>
+
+    <!-- ============ 06：判定引擎（左半屏 · 青色） ============ -->
+    <div id="scr06" class="scr">
+      <div class="laneHead">
+        <span class="dk mono">06</span>
+        <span class="dt">判定域 · JUDGE</span>
+        <span class="ds">个体基线偏离 · J1–J8</span>
+        <span class="chip mono" id="jRate">RATE 1.0×</span>
+      </div>
+
+      <div class="flowBox">
+        <div class="track" id="jTrack"></div>
+        <div class="jscan" id="jScan"></div>
+        <i class="flowFade l"></i><i class="flowFade r"></i>
+        <div class="flowWire"></div>
+      </div>
+
+      <div class="jBottom">
+        <div class="wcard">
+          <div class="wh"><b>J6 · 动态权重</b><span class="mono">w = N₀ / (N₀ + N)</span></div>
+          <div class="wbig"><span class="mono" id="wVal">1.000</span><em>w</em></div>
+          <div class="wbar"><i id="wFill"></i><span class="thr"></span><span class="thrLab mono">w_thr 0.45</span></div>
+          <div class="wfoot">
+            <span>N₀ <b class="mono" id="wN0">64</b></span>
+            <span>N <b class="mono" id="wN">0</b></span>
+            <span>命中 <b class="mono" id="jHits">0 / 8</b></span>
+          </div>
+        </div>
+
+        <div class="rcard" id="jRes">
+          <div class="rh"><b>判定输出 · VERDICT</b><span class="mono" id="jResTag">WAIT</span></div>
+          <div class="rv" id="jResVal">等待 J8 …</div>
+          <div class="rexp" id="jExp">
+            <div class="rexToggle"><span class="mono">EXPLANATION · 3 项依据</span><i>▾</i></div>
+            <div class="exl"><b>01</b>J3 零点漂移 0.048 m/s（2.4σ）→ 单次超限</div>
+            <div class="exl"><b>02</b>J6 权重 w = 0.34（N₀ 64 / N 124）→ 自动降权</div>
+            <div class="exl"><b>03</b>结论：不升级预警，转设备自检；不写人员状态</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="jcode" id="jCode">
+        <div class="ch"><b>JUDGE.JS</b><span class="mono">4 / 4 LINES</span></div>
+      </div>
+    </div>
+
+    <!-- ============ 07：设备门控（独立屏 · 全屏闸门） ============ -->
+    <div id="scr07" class="scr gate">
+      <i class="gateHz"></i>
+      <i class="gateScan"></i>
+
+      <div class="gateWrap" id="gateWrap">
+        <div class="gHead">
+          <span class="gk mono">07</span>
+          <span class="gt">设备门控 · DEVICE GATE</span>
+          <span class="gs">独立屏：闸门只作用于设备动作域</span>
+          <span class="chip mono" id="gateRate">RATE 1.0×</span>
+        </div>
+
+        <div class="trigList" id="trigList"></div>
+
+        <div class="gateCore" id="gateCore">
+          <div class="gateFrame">
+            <div class="action" id="actWrap">
+              <div class="ah">动作域 · ACTION DOMAIN</div>
+              <div class="arow"><span>告警外发</span><b>ON</b></div>
+              <div class="arow"><span>上报通道</span><b>ON</b></div>
+              <div class="arow"><span>联动控制</span><b>ON</b></div>
+              <div class="arow"><span>人员告警</span><b>0</b></div>
+              <div class="astroke">
+                <i class="abar"><b id="gateBar"></b></i>
+                <span class="mono" id="gateStroke">STROKE 0%</span>
+              </div>
+              <div class="afoot mono">ROUTE · 设备工单</div>
+            </div>
+            <div class="shut top"></div>
+            <div class="shut bot"></div>
+          </div>
+          <div class="gateStats">
+            <b id="gateStat">OPEN</b>
+            <span class="mono">闸门 · GATE</span>
+          </div>
+          <div class="gateFlash" id="gateFlash"></div>
+        </div>
+
+        <svg class="route" viewBox="0 0 1920 1080" width="1920" height="1080" aria-hidden="true">
+          <path class="rbg" d="M1186 520 H1218 V586 H1250"/>
+          <path class="rfg" id="routePath" pathLength="100" d="M1186 520 H1218 V586 H1250"/>
+          <polygon class="rtip" id="routeTip" points="1250,578 1264,586 1250,594"/>
+        </svg>
+
+        <div class="obj person">
+          <div class="ot">对象 A · 人员告警面板</div>
+          <div class="obig mono" id="personNum">0</div>
+          <div class="osub" id="personSub">未生成 · 由上游独立判定，本机不参与</div>
+          <div class="olock mono">PERSONNEL ALERT · GATED</div>
+        </div>
+
+        <div class="obj ticket" id="ticketPanel">
+          <div class="ot">对象 B · 设备工单面板</div>
+          <div class="oid mono">DT-2418</div>
+          <div class="orows">
+            <div><span>设备</span><b>USFM-06 · 外卡式</b></div>
+            <div><span>触发</span><b>心跳 / 电量 / 信号 / 离线 / 全零</b></div>
+            <div><span>处置</span><b>现场自检 · 复校零点</b></div>
+          </div>
+          <div class="ostamp">已受理</div>
+        </div>
+
+        <div class="gFoot">
+          <span>闸门闭合后：动作域整体隔离，人员告警保持 0 条</span>
+          <b class="mono" id="gateCount">0 / 5</b>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 08：预警路由（右半屏 · 橙红） ============ -->
+    <div id="scr08" class="scr alert">
+      <div class="laneHead">
+        <span class="dk mono">08</span>
+        <span class="dt">预警域 · ALERT</span>
+        <span class="ds">分级 · 抑制 · 回填 · Y1–Y8</span>
+        <span class="chip mono" id="yRate">ZOOM ×1.0</span>
+      </div>
+
+      <div class="cam" id="cam08">
+        <div class="flowBox y">
+          <div class="track" id="yTrack"></div>
+          <div class="jscan" id="yScan"></div>
+          <i class="flowFade l"></i><i class="flowFade r"></i>
+          <div class="flowWire"></div>
+        </div>
+
+        <div class="tiers" id="tTiers"></div>
+
+        <div class="ycode" id="yCode">
+          <div class="ch"><b>ALERT.JS</b><span class="mono">4 / 4 LINES</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="yNote" id="yNote">T1 / T2 / T3 为示例阈值，需试点标定；同一设备 10 min 内只留最高级</div>
+
+    <!-- ============ 09：上报（链上取数 · 电源 / 存储 / 通信） ============ -->
+    <div id="scr09" class="scr">
+      <div class="laneHead">
+        <span class="dk mono">09</span>
+        <span class="dt">上报 · UPLINK</span>
+        <span class="ds">信号链取数 · 只在「需上报」时才发</span>
+        <span class="chip mono" id="mZoom">ZOOM ×1.0</span>
+      </div>
+
+      <div class="chainBox">
+        <div class="chainCam" id="mCam">
+          <div class="track" id="mTrack"></div>
+          <i class="chainWire"></i>
+        </div>
+        <div class="chainFade l"></div><div class="chainFade r"></div>
+        <div class="chainHud mono"><span>CHAIN 01 → 05</span><b id="mChain">0 / 5</b></div>
+      </div>
+
+      <div class="mCards" id="mCards"></div>
+
+      <div class="kpiCard">
+        <div class="kh"><b>指标卡 · KPI</b><span class="mono">24 h · 模拟</span></div>
+        <div class="kbody" id="mKpi"></div>
+        <div class="kfoot mono">通信只在需上报时亮 · 闸门左侧保持灰 · 人员告警 0 条</div>
+      </div>
+    </div>
+
+    <!-- ============ 10：复原 + 24 h 四拍（05 反向播放 → 闭环） ============ -->
+    <div id="scr10" class="scr">
+      <div class="laneHead">
+        <span class="dk mono">10</span>
+        <span class="dt">复原 · RECONSTRUCT</span>
+        <span class="ds">05 反向播放 → 24 h 四拍闭环</span>
+        <span class="chip mono" id="hRate">24 H · 4 BEATS</span>
+      </div>
+
+      <div class="hAxis">
+        <i class="hLine"></i>
+        <i class="hFill" id="hFill"></i>
+        <i class="hHead" id="hHead"></i>
+        <div class="hBeats" id="hBeats"></div>
+      </div>
+
+      <div class="hWave">
+        <div class="wh"><b>负样本 · NEGATIVE</b><span class="mono" id="wvTag">0 / 4</span></div>
+        <canvas id="wv10" width="940" height="152"></canvas>
+      </div>
+
+      <div class="hEvt">
+        <div class="wh"><b>事件卡 · EVENTS</b><span class="mono" id="evTag">0 / 6</span></div>
+        <div class="evList" id="evList"></div>
+      </div>
+
+      <div class="hS">
+        <div class="sh"><b>S(t) · 持续零用水</b><span class="mono" id="sTag">NORMAL</span></div>
+        <canvas id="s10" width="420" height="128"></canvas>
+        <div class="sbig mono" id="sVal">0.28</div>
+      </div>
+
+      <div class="hRoute">
+        <div class="rh"><b>拍 3 · 外呼 → 核实 → 回填 → 微调 → 消警</b><span class="mono" id="rtTag">0 / 6</span></div>
+        <div class="rtList" id="rtList"></div>
+      </div>
+
+      <div class="hRev" id="hRev">
+        <div class="rvh"><b>05 复原 · REVERSE PLAY</b><span class="mono" id="revPct">100%</span></div>
+        <div class="rvbar"><i id="revFill"></i></div>
+        <div class="rvrows" id="revRows"></div>
+        <div class="rvf">盖板滑回 · 线缆接回 · 模块回插 · 外壳合拢</div>
+      </div>
+
+      <div class="hFinal" id="hFinal">
+        <div class="fh"><b>24 h 闭环 · VERDICT</b><span class="mono" id="fZoom">×1.0</span></div>
+        <div class="fv">闭环完成 · 误报 1 次已回填</div>
+        <div class="frows">
+          <div><span>判定</span><b class="mono">NORMAL → SUSPECT → 0</b></div>
+          <div><span>阈值</span><b class="mono">0.68 → 0.74</b></div>
+          <div><span>人员状态</span><b class="mono">不参与</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="endLine">
+      <div class="e1">系统不判定人员状态</div>
+      <div class="e2">模拟数据，仅用于原理与算法演示，非实测结论</div>
+    </div>
+
+    <div id="chapter">
+      <div class="bar"></div>
+      <div class="num mono" id="chNum">02</div>
+      <div class="txt"><h1 id="chTitle">通水</h1><p id="chSub">满管静水 → 流速粒子启动</p></div>
+    </div>
+
+    <div id="viewtag">
+      <div class="row"><span class="dot"></span><span class="label">FLOW VIEW</span></div>
+      <div class="mod mono" id="viewMod">clamp_on_us</div>
+    </div>
+
+    <div id="matag">
+      <div class="row"><span class="k">ZOOM</span><span class="v mono" id="zoomV">×1.0</span></div>
+      <div class="row"><span class="k">REFLECT</span><span class="v mono" id="hitV">00 / 08</span></div>
+    </div>
+
+    <div id="dtbar">
+      <div class="dhead"><b>双向计时 · Δt</b><span class="mono">TOF PAIR</span></div>
+      <div class="drow" id="dtAB"><span class="dlab">顺流 A→B</span><span class="dbar"><i></i></span><span class="dval mono">817.600 µs</span></div>
+      <div class="drow" id="dtBA"><span class="dlab">逆流 B→A</span><span class="dbar"><i></i></span><span class="dval mono">818.858 µs</span></div>
+      <div class="dfoot"><span class="dd">Δ = <b class="mono">1258 ns</b></span><span class="dv">v = <b class="mono">1.24 m/s</b></span></div>
+    </div>
+
+    <div id="fboard">
+      <div class="fhead"><b>时差推导</b><span class="mono">TOF · 4 LINES</span></div>
+      <div class="frow"><span class="fi mono">01</span><span class="feq">t₁ = L / (c + v·cos<i>θ</i>)</span><span class="fnote cy">顺流 · 短</span></div>
+      <div class="frow"><span class="fi mono">02</span><span class="feq">t₂ = L / (c − v·cos<i>θ</i>)</span><span class="fnote or">逆流 · 长</span></div>
+      <div class="frow"><span class="fi mono">03</span><span class="feq">Δt = t₂ − t₁ ≈ 2L·v·cos<i>θ</i> / c²</span><span class="fnote">差值</span></div>
+      <div class="frow"><span class="fi mono">04</span><span class="feq">Q = k·(πD²/4)·c²·Δt / (2L·cos<i>θ</i>)</span><span class="fnote gr">换算</span></div>
+    </div>
+
+    <div id="decide">
+      <div class="dln"><span class="di">①</span>小管径、信号弱 → 选 <b>W 法</b>：4 段声程把 Δt 放大一倍</div>
+      <div class="dln"><span class="di">②</span>只认双向差值：顺流短、逆流长，Δt 与流速成正比</div>
+      <div class="dln"><span class="di">③</span>先修零点再谈流速：1 Hz 采样 + 噪声门限才敢用</div>
+    </div>
+
+    <div id="raw">
+      <div class="rhead"><b>原始帧 · RAW FRAME</b><span class="mono" id="rawSeq">#000281</span></div>
+      <div class="rgrid" id="rawGrid"></div>
+      <div class="rfoot mono">Q = 15.2 L/s · 3 帧均值 · 满管校验 OK</div>
+    </div>
+
+    <div id="installFoot">
+      <div><span class="fi">01</span>直管段硬条件：上游 ≥ 10D（1.25 m）、下游 ≥ 5D（0.63 m），弯头 / 阀门附近禁装</div>
+      <div><span class="fi">02</span>打磨只去氧化层并保持原弧度；耦合剂薄层排气，严禁空腔</div>
+    </div>
+
+    <div id="sgauge">
+      <div class="shead"><b>信号 / 质量</b><span class="mono">RX · 1 MHz</span></div>
+      <div class="srow"><span class="slab">SIGNAL</span><span class="sbar"><i id="sigBar"></i><em></em></span><span class="sval mono" id="sigVal">90%</span></div>
+      <div class="srow"><span class="slab">Q</span><span class="sbar"><i id="qBar"></i><em></em></span><span class="sval mono" id="qVal">94</span></div>
+      <div class="sgas"><span class="key">G</span><span id="gasTxt">顶部积气 OFF · 满管</span><b id="gasPill">FULL</b></div>
+    </div>
+
+    <div id="bytes">
+      <div class="bhead"><b>原始帧 · RAW FRAME</b><span class="mono">#0002A7 · 24 B</span></div>
+      <div class="bgrid" id="bgrid"></div>
+      <div class="blegend" id="blegend">
+        <span class="bf head"><i></i>帧头 HEAD <b>4 B</b></span>
+        <span class="bf data"><i></i>数据 DATA <b>16 B</b></span>
+        <span class="bf len"><i></i>长度 LEN <b>2 B</b></span>
+        <span class="bf crc"><i></i>校验 CRC <b>2 B</b></span>
+      </div>
+      <div class="bfoot"><span>字段 <b>4</b> · 字节 <b>24</b> · 模块 <b>4</b></span><span class="mono">SOF → DATA → LEN → CRC</span></div>
+    </div>
+
+    <div id="pins"></div>
+    <div id="tags"></div>
+    <div id="mods"></div>
+    <div id="whip"></div>
+
+    <div id="card">
+      <div class="chead"><div class="ctitle" id="cardTitle">数据卡 · DATA CARD</div><div class="cmeta mono" id="cardMeta">02 接入后启用</div></div>
+      <canvas id="cardCanvas" width="1128" height="340"></canvas>
+      <div class="cfoot" id="cardFoot"></div>
+    </div>
+
+    <div id="slogan"></div>
+
+    <!-- 03 开头：预编排「vibe 迭代」卡（写错 → 报错 → 改一行 → 重跑 → 画面修正） -->
+    <div id="iter">
+      <div class="ih"><b>VIBE LOOP · 迭代 03</b><span class="mono" id="iterRun">RUN 1</span></div>
+      <div class="irow mono" id="iterRows"></div>
+      <div class="istat idle" id="iterStat"><i></i><span id="iterMsg">运行中</span></div>
+      <canvas id="iterCv" width="800" height="244"></canvas>
+      <div class="ifoot"><span id="iterNote">W 法声路复核</span><span class="mono" id="iterCnt">0 / 2</span></div>
+    </div>
+
+    <div id="instr" class="panel">
+      <div class="ph"><b>指令 · INSTRUCT</b><span class="mono" id="instrIdx">01 / 03</span></div>
+      <div id="instrBody"></div>
+    </div>
+
+    <div id="code" class="panel">
+      <div class="ph"><b>代码 · RUN</b><span class="mono" id="codeIdx">JS</span></div>
+      <div id="codeBody" class="mono"></div>
+    </div>
+
+    <div id="prog"><div id="ph"></div></div>
+
+    <div id="foot">
+      <div>模拟数据，仅用于原理与算法演示，非实测结论<span class="tag">需实流标定 / 需试点验证</span></div>
+      <div class="strong">系统不判定人员状态</div>
+    </div>
+  </div>
+
+  <div id="ctrl">
+    <button id="btnPlay">暂停</button>
+    <button id="btnRestart">回到开头</button>
+    <button id="btnExp">导出视频</button>
+    <span class="tc mono" id="tc">00:09.00</span>
+    <span class="sp" id="spd"><button data-s="0.5">0.5×</button><button data-s="1" class="on">1×</button><button data-s="2">2×</button></span>
+    <span class="tip">拖动进度条回看 · 拖动画面转视角 · 滚轮缩放</span>
+  </div>
+
+  <div id="dbg"></div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/util.js"></script>
+<script src="js/vendor-loader.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/rig.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/player.js"></script>
+<script src="js/mp4.js"></script>
+<script src="js/webm.js"></script>
+<script src="js/export.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
